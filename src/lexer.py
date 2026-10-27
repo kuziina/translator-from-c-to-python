@@ -30,7 +30,6 @@ _TOKEN_SPEC: List[Tuple[str, str, str]] = [
 
     # --- заголовки ---
     ('H1', r'<[a-zA-Z0-9_/\.]+>', 'HEADER'),
-    ('H2', r'"[a-zA-Z0-9_/\.]+"', 'HEADER'),
 
     # --- ключевые слова ---
     ('I3', r'(?<!\w)int(?!\w)', 'KEYWORD'),

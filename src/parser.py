@@ -80,17 +80,18 @@ class Parser:
     def parse_include(self) -> IncludeStmt:
         self._expect('PREPROCESSOR')
         hdr = self._peek()
-        if hdr.category != 'HEADER':
-            raise TranslationException(TranslationError(
-                stage='parser',
-                code='E_PARSE_INCLUDE',
-                message=f"Ожидался заголовочный файл, получено {hdr.value!r}",
-                line=hdr.line, col=hdr.col,
-            ))
-        self.lexer.consume()
-        is_system = hdr.value.startswith('<')
-        name = hdr.value[1:-1]
-        return IncludeStmt(name, is_system)
+        if hdr.category == 'HEADER':          # <stdio.h>
+            self.lexer.consume()
+            return IncludeStmt(hdr.value[1:-1], is_system=True)
+        if hdr.category == 'STRING':          # "myheader.h"
+            self.lexer.consume()
+            return IncludeStmt(hdr.value[1:-1], is_system=False)
+        raise TranslationException(TranslationError(
+            stage='parser',
+            code='E_PARSE_INCLUDE',
+            message=f"Ожидался заголовочный файл, получено {hdr.value!r}",
+            line=hdr.line, col=hdr.col,
+        ))
 
     def parse_define(self) -> DefineStmt:
         self._expect('PREPROCESSOR')
@@ -454,11 +455,20 @@ class Parser:
         return left
 
     def parse_unary(self) -> Expr:
+        # префиксные
         if self._peek().category == 'OPERATOR' and self._peek().value in ('+', '-', '!', '~', '++', '--', '&', '*'):
             op = self.lexer.consume().value
             operand = self.parse_unary()
             return UnaryOp(op, operand)
-        return self.parse_primary()
+
+        # операнд
+        expr = self.parse_primary()
+
+        # постфиксные ++/--
+        while self._peek().category == 'OPERATOR' and self._peek().value in ('++', '--'):
+            op = self.lexer.consume().value
+            expr = UnaryOp(op, expr)  # помечаем как постфикс (op тот же, но порядок — в узле)
+        return expr
 
     def parse_primary(self) -> Expr:
         t = self._peek()
