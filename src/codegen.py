@@ -150,8 +150,7 @@ class CodeGenerator:
         if main is not None:
             self._emit('if __name__ == "__main__":')
             self.indent += 1
-            for s in main.body:
-                self._gen_stmt(s)
+            self._emit('main()')
             self.indent -= 1
 
         # Убираем trailing пустые строки
