@@ -8,18 +8,14 @@ from src.translator import translate
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Транспилятор C → Python")
+        self.title("Транслятор C → Python")
         self.geometry("1200x800")
         self.minsize(800, 600)
 
-        self._debug_var = tk.BooleanVar(value=True)  # показывать отладку по умолчанию
+        self._debug_var = tk.BooleanVar(value=True)
         self._build_ui()
 
-    # ==========================================
-    # ПОСТРОЕНИЕ ИНТЕРФЕЙСА
-    # ==========================================
     def _build_ui(self):
-        # --- Верхняя панель кнопок ---
         top = tk.Frame(self)
         top.pack(side=tk.TOP, fill=tk.X, padx=8, pady=8)
 
@@ -29,11 +25,9 @@ class App(tk.Tk):
         
         tk.Checkbutton(top, text="Показать отладку", variable=self._debug_var).pack(side=tk.LEFT, padx=12)
 
-        # --- Основная область: два поля ввода/вывода ---
         body = tk.Frame(self)
         body.pack(fill=tk.BOTH, expand=True, padx=8, pady=4)
 
-        # Левое поле (C)
         left = tk.Frame(body)
         left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         tk.Label(left, text="C (вход)", font=('Arial', 10, 'bold')).pack(anchor='w')
@@ -41,7 +35,6 @@ class App(tk.Tk):
         self.txt_in.pack(fill=tk.BOTH, expand=True)
         self._setup_clipboard(self.txt_in)
 
-        # Правое поле (Python)
         right = tk.Frame(body)
         right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(8, 0))
         tk.Label(right, text="Python (выход)", font=('Arial', 10, 'bold')).pack(anchor='w')
@@ -49,7 +42,6 @@ class App(tk.Tk):
         self.txt_out.pack(fill=tk.BOTH, expand=True)
         self._setup_clipboard(self.txt_out)
 
-        # --- Нижняя панель (Вкладки) ---
         self.bottom = ttk.Notebook(self)
         self.bottom.pack(fill=tk.BOTH, expand=False, padx=8, pady=(0, 8))
 
@@ -69,17 +61,13 @@ class App(tk.Tk):
         self.tab_stages = scrolledtext.ScrolledText(self.bottom, height=8, font=('Consolas', 10))
         self.bottom.add(self.tab_stages, text="Этапы / Отладка")
 
-        # --- Статусная строка ---
         self.status = tk.StringVar(value="Готов к работе")
         tk.Label(self, textvariable=self.status, anchor='w', relief='sunken', padx=8).pack(
             side=tk.BOTTOM, fill=tk.X)
 
-        # Привязка Ctrl+Enter к трансляции
         self.bind('<Control-Return>', lambda e: self.on_translate())
 
-    # ==========================================
     # КОПИРОВАНИЕ / ВСТАВКА (Буфер обмена)
-    # ==========================================
     def _setup_clipboard(self, widget):
         for seq, h in (
             ('<Control-c>', lambda e: self._copy(widget)), ('<Control-C>', lambda e: self._copy(widget)),
@@ -145,9 +133,7 @@ class App(tk.Tk):
         w.see(tk.INSERT)
         return "break"
 
-    # ==========================================
     # ОБРАБОТЧИКИ СОБЫТИЙ
-    # ==========================================
     def on_translate(self):
         src = self.txt_in.get("1.0", tk.END)
         debug = self._debug_var.get()
@@ -216,9 +202,7 @@ class App(tk.Tk):
         messagebox.showinfo("Сохранено", f"Файл сохранён: {path}")
         self.status.set(f"Сохранено в {path}")
 
-    # ==========================================
     # ФОРМАТИРОВАНИЕ ДЛЯ ОТЛАДКИ
-    # ==========================================
     @staticmethod
     def _format_tokens(tokens):
         lines = []

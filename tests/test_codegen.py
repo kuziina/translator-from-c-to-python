@@ -9,14 +9,12 @@ from src.codegen import CodeGenerator
 # ---------- helpers ----------
 
 def gen(src: str) -> str:
-    """Парсит, анализирует и генерирует Python-код. Ожидает успех."""
     ast = parse(src)
     SemanticAnalyzer().analyze(ast)
     return CodeGenerator().generate(ast)
 
 
 def gen_err(src: str):
-    """Ожидает, что генерация упадёт (например, неподдерживаемая конструкция)."""
     with pytest.raises(Exception) as exc_info:
         ast = parse(src)
         SemanticAnalyzer().analyze(ast)
@@ -359,4 +357,98 @@ def test_generated_code_is_valid_python():
     r = translate(src)
     assert r.success, r.errors
     # Проверка: код синтаксически корректен для Python
+    compile(r.python_code, '<generated>', 'exec')
+
+
+# ---------- массивы ----------
+
+def test_2d_array_zeros():
+    code = gen("int main() { int a[2][3]; return 0; }")
+    assert 'a = [[0] * (3) for _ in range(2)]' in code
+
+
+def test_1d_array_zeros():
+    code = gen("int main() { int a[5]; return 0; }")
+    assert 'a = [0] * (5)' in code
+
+
+def test_2d_array_nested_initializer():
+    code = gen("""
+    int main() {
+        int a[2][3] = {{1, 2, 3}, {4, 5, 6}};
+        return 0;
+    }
+    """)
+    assert 'a = [[1, 2, 3], [4, 5, 6]]' in code
+
+
+def test_2d_array_flat_initializer():
+    code = gen("""
+    int main() {
+        int a[2][3] = {1, 2, 3, 4, 5, 6};
+        return 0;
+    }
+    """)
+    assert 'a = [[1, 2, 3], [4, 5, 6]]' in code
+
+
+def test_2d_array_initializer_padding():
+    code = gen("""
+    int main() {
+        int a[2][3] = {{1}, {2, 3}};
+        return 0;
+    }
+    """)
+    assert 'a = [[1, 0, 0], [2, 3, 0]]' in code
+
+
+def test_unsized_array_infers_length():
+    code = gen("int main() { int a[] = {1, 2, 3}; return 0; }")
+    assert 'a = [1, 2, 3]' in code
+
+    code = gen("int main() { int a[][2] = {{1, 2}, {3, 4}}; return 0; }")
+    assert 'a = [[1, 2], [3, 4]]' in code
+
+    code = gen("""
+    int main() {
+        int a[][3] = {1, 2, 3, 4, 5, 6};
+        return 0;
+    }
+    """)
+    assert 'a = [[1, 2, 3], [4, 5, 6]]' in code
+
+
+def test_2d_array_access_and_assignment():
+    code = gen("""
+    int main() {
+        int a[2][3];
+        a[0][1] = 5;
+        a[1][2] += a[0][1];
+        a[0][0]++;
+        return a[1][2];
+    }
+    """)
+    assert_contains(code, 'a[0][1] = 5', 'a[1][2] += a[0][1]',
+                    'a[0][0] += 1', 'return a[1][2]')
+
+
+def test_2d_array_generated_code_is_valid_python():
+    src = """
+    #include <stdio.h>
+    int main() {
+        int a[2][3] = {{1, 2, 3}, {4, 5, 6}};
+        int i;
+        int j;
+        int sum = 0;
+        for (i = 0; i < 2; i++) {
+            for (j = 0; j < 3; j++) {
+                sum += a[i][j];
+            }
+        }
+        printf("sum = %d\\n", sum);
+        return 0;
+    }
+    """
+    r = translate(src)
+    assert r.success, r.errors
     compile(r.python_code, '<generated>', 'exec')

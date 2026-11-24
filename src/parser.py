@@ -1,25 +1,29 @@
 from __future__ import annotations
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from .ast_nodes import (
-    Num, Str, Char, Ident, BinOp, UnaryOp, TernaryOp, CallExpr, Assignment,
-    VarDecl, MultiVarDecl, ExprStmt, IfStmt, WhileStmt, DoWhileStmt, ForStmt,
-    ReturnStmt, BreakStmt, ContinueStmt, CaseStmt, SwitchStmt,
-    IncludeStmt, DefineStmt, CommentStmt, FuncDef, Program,
-    Expr, Stmt,
+    Num, Str, Char, Bool, Ident, ArrayAccess, ArrayInit, BinOp, UnaryOp,
+    TernaryOp, CallExpr, Assignment, VarDecl, MultiVarDecl, ExprStmt, IfStmt,
+    WhileStmt, DoWhileStmt, ForStmt, ReturnStmt, BreakStmt, ContinueStmt,
+    CaseStmt, SwitchStmt, IncludeStmt, DefineStmt, IfdefStmt, CommentStmt,
+    FuncDef, Program, Expr, Stmt,
 )
 from .errors import TranslationError, TranslationException
 from .lexer import Lexer, Token
 
 
 TYPE_KEYWORDS = {'int', 'char', 'float', 'double', 'void'}
+TYPE_QUALIFIERS = {'short', 'long', 'unsigned', 'signed'}
+
+
+def _norm_pp(value: str) -> str:
+    return ''.join(value.split())
 
 
 class Parser:
     def __init__(self, lexer: Lexer):
         self.lexer = lexer
 
-    # ---- helpers ----
     def _peek(self) -> Token:
         return self.lexer.peek()
 
@@ -51,39 +55,76 @@ class Parser:
             ))
         return self.lexer.consume()
 
-    # ---- program ----
+    def _skip_to_eol(self, start_tok: Token) -> None:
+        self.lexer.consume()
+        while self._peek().code != 'EOF' and self._peek().line == start_tok.line:
+            self.lexer.consume()
+
+    def _skip_ifdef_block(self) -> None:
+        depth = 0
+        while self._peek().code != 'EOF':
+            t = self._peek()
+            if t.category == 'PREPROCESSOR':
+                pp = _norm_pp(t.value)
+                if pp in ('#ifdef', '#ifndef', '#if'):
+                    depth += 1
+                    self._skip_to_eol(t)
+                    continue
+                if pp == '#endif':
+                    self.lexer.consume()
+                    if depth == 0:
+                        return
+                    depth -= 1
+                    continue
+            self.lexer.consume()
+
     def parse_program(self) -> Program:
         includes: List[IncludeStmt] = []
         defines: List[DefineStmt] = []
         funcs: List[FuncDef] = []
+        header_comments: List[CommentStmt] = []
+        pending_comments: List[CommentStmt] = []
+        seen_construct = False
 
         while self._peek().code != 'EOF':
             if self._is('PREPROCESSOR'):
-                pp = self._peek().value
+                seen_construct = True
+                pp = _norm_pp(self._peek().value)
                 if pp == '#include':
                     includes.append(self.parse_include())
                 elif pp == '#define':
                     defines.append(self.parse_define())
+                elif pp in ('#ifdef', '#ifndef'):
+                    self._skip_ifdef_block()
                 else:
-                    # Неподдерживаемые директивы пропускаем до конца строки
-                    self.lexer.consume()
-                    while self._peek().code != 'EOF' and self._peek().value != '\n':
-                        self.lexer.consume()
-                    # SKIP для \n уже отработан лексером
+                    self._skip_to_eol(self._peek())
             elif self._is('COMMENT'):
-                self.lexer.consume()  # комментарии между функциями пропускаем
+                tok = self.lexer.consume()
+                comment = CommentStmt(tok.value)
+                if seen_construct:
+                    pending_comments.append(comment)
+                else:
+                    header_comments.append(comment)
             else:
-                funcs.append(self.parse_func())
+                seen_construct = True
+                fn = self.parse_func()
+                if pending_comments:
+                    fn.leading_comments = pending_comments
+                    pending_comments = []
+                funcs.append(fn)
 
-        return Program(includes, defines, funcs)
+        if pending_comments and funcs:
+            funcs[-1].body.extend(pending_comments)
+
+        return Program(includes, defines, funcs, header_comments)
 
     def parse_include(self) -> IncludeStmt:
         self._expect('PREPROCESSOR')
         hdr = self._peek()
-        if hdr.category == 'HEADER':          # <stdio.h>
+        if hdr.category == 'HEADER': 
             self.lexer.consume()
             return IncludeStmt(hdr.value[1:-1], is_system=True)
-        if hdr.category == 'STRING':          # "myheader.h"
+        if hdr.category == 'STRING': 
             self.lexer.consume()
             return IncludeStmt(hdr.value[1:-1], is_system=False)
         raise TranslationException(TranslationError(
@@ -104,27 +145,37 @@ class Parser:
                 line=name_tok.line, col=name_tok.col,
             ))
         self.lexer.consume()
-        # Собираем всё до конца строки как «значение»
         parts: List[str] = []
-        # У нас SKIP уже съел \n, поэтому просто собираем токены,
-        # пока не встретим 'EOI' (следующий # или объявление) — упрощённо
-        # читаем токены, пока они на той же строке
         start_line = name_tok.line
         while self._peek().code != 'EOF' and self._peek().line == start_line:
             parts.append(self.lexer.consume().value)
         value = ' '.join(parts) if parts else None
         return DefineStmt(name_tok.value, value)
 
-    def parse_func(self) -> FuncDef:
-        ret_type_tok = self._peek()
-        if ret_type_tok.category != 'KEYWORD' or ret_type_tok.value not in TYPE_KEYWORDS:
+    def _parse_type_spec(self, error_code: str,
+                         error_message: str) -> Tuple[str, Token]:
+        first_tok = self._peek()
+        quals: List[str] = []
+        while (self._peek().category == 'KEYWORD'
+               and self._peek().value in TYPE_QUALIFIERS):
+            quals.append(self.lexer.consume().value)
+        base_tok = self._peek()
+        if base_tok.category == 'KEYWORD' and base_tok.value in TYPE_KEYWORDS:
+            self.lexer.consume()
+            base = base_tok.value
+        elif quals:
+            base = 'int'
+        else:
             raise TranslationException(TranslationError(
-                stage='parser',
-                code='E_PARSE_FUNC_RET',
-                message=f"Ожидался тип возвращаемого значения, получено {ret_type_tok.value!r}",
-                line=ret_type_tok.line, col=ret_type_tok.col,
+                stage='parser', code=error_code,
+                message=f"{error_message}, получено {first_tok.value!r}",
+                line=first_tok.line, col=first_tok.col,
             ))
-        self.lexer.consume()
+        return ' '.join(quals + [base]), first_tok
+
+    def parse_func(self) -> FuncDef:
+        ret_type, ret_type_tok = self._parse_type_spec(
+            'E_PARSE_FUNC_RET', 'Ожидался тип возвращаемого значения')
 
         name_tok = self._peek()
         if name_tok.category != 'IDENTIFIER':
@@ -144,12 +195,12 @@ class Parser:
         body = self._parse_block()
         self._expect('DELIMITER', '}')
 
-        return FuncDef(ret_type_tok.value, name_tok.value, params, body)
+        return FuncDef(ret_type, name_tok.value, params, body,
+                       line=ret_type_tok.line, col=ret_type_tok.col)
 
     def _parse_param_list(self) -> List[VarDecl]:
         if self._is_delim(')'):
             return []
-        # void в списке параметров = пустой список
         if self._is_kw('void') and self.lexer.tokens[self.lexer.pos + 1].value == ')':
             self.lexer.consume()
             return []
@@ -161,17 +212,44 @@ class Parser:
         return params
 
     def _parse_param(self) -> VarDecl:
-        type_tok = self._peek()
-        if type_tok.category != 'KEYWORD' or type_tok.value not in TYPE_KEYWORDS:
-            raise TranslationException(TranslationError(
-                stage='parser',
-                code='E_PARSE_PARAM_TYPE',
-                message=f"Ожидался тип параметра, получено {type_tok.value!r}",
-                line=type_tok.line, col=type_tok.col,
-            ))
-        self.lexer.consume()
+        type_, type_tok = self._parse_type_spec(
+            'E_PARSE_PARAM_TYPE', 'Ожидался тип параметра')
         name_tok = self._expect('IDENTIFIER')
-        return VarDecl(type_tok.value, name_tok.value)
+        dims = self._parse_array_dims()
+        return VarDecl(type_, name_tok.value,
+                       line=type_tok.line, col=type_tok.col, dims=dims)
+
+    def _parse_array_dims(self) -> List[Expr]:
+        """Размерности массива: [2][3] -> [Num(2), Num(3)].
+
+        Незаполненная размерность (``[]``) кодируется как ``Num(0)``
+        и уточняется по инициализатору на этапе генерации кода.
+        """
+        dims: List[Expr] = []
+        while self._is_delim('['):
+            self.lexer.consume()
+            if self._is_delim(']'):
+                dims.append(Num(0))
+            else:
+                dims.append(self.parse_expr())
+            self._expect('DELIMITER', ']')
+        return dims
+
+    def _parse_array_init(self) -> ArrayInit:
+        """Рекурсивный инициализатор: {1, 2, {3, 4}}."""
+        self._expect('DELIMITER', '{')
+        values: List = []
+        while not self._is_delim('}'):
+            if self._is_delim('{'):
+                values.append(self._parse_array_init())
+            else:
+                values.append(self.parse_expr())
+            if self._is_delim(','):
+                self.lexer.consume()
+                continue
+            break
+        self._expect('DELIMITER', '}')
+        return ArrayInit(values)
 
     def _parse_block(self) -> List[Stmt]:
         stmts: List[Stmt] = []
@@ -187,24 +265,31 @@ class Parser:
             return body
         return [self.parse_stmt()]
 
-    # ---- statements ----
     def parse_stmt(self) -> Stmt:
         t = self._peek()
 
         if t.category == 'COMMENT':
             self.lexer.consume()
             return CommentStmt(t.value)
+
+        if t.category == 'PREPROCESSOR':
+            pp = _norm_pp(t.value)
+            if pp in ('#ifdef', '#ifndef'):
+                return self.parse_ifdef()
+            self._skip_to_eol(t)
+            return CommentStmt(f"// {pp} (пропущено транспилятором)")
+
         if t.category == 'KEYWORD':
             if t.value == 'return':
                 return self.parse_return()
             if t.value == 'break':
-                self.lexer.consume()
+                tok = self.lexer.consume()
                 self._expect('DELIMITER', ';')
-                return BreakStmt()
+                return BreakStmt(line=tok.line, col=tok.col)
             if t.value == 'continue':
-                self.lexer.consume()
+                tok = self.lexer.consume()
                 self._expect('DELIMITER', ';')
-                return ContinueStmt()
+                return ContinueStmt(line=tok.line, col=tok.col)
             if t.value == 'if':
                 return self.parse_if()
             if t.value == 'while':
@@ -215,23 +300,52 @@ class Parser:
                 return self.parse_for()
             if t.value == 'switch':
                 return self.parse_switch()
-            if t.value in ('int', 'char', 'float', 'double'):
+            if (t.value in ('int', 'char', 'float', 'double')
+                    or t.value in TYPE_QUALIFIERS or t.value == 'const'):
                 return self.parse_declaration()
 
         expr = self.parse_expr()
         self._expect('DELIMITER', ';')
         return ExprStmt(expr)
 
+    def _at_type_decl(self) -> bool:
+        t = self._peek()
+        if t.category != 'KEYWORD':
+            return False
+        if (t.value in ('int', 'char', 'float', 'double')
+                or t.value in TYPE_QUALIFIERS):
+            return True
+        if t.value == 'const':
+            toks = self.lexer.tokens
+            i = self.lexer.pos + 1
+            if i < len(toks) and toks[i].category == 'KEYWORD':
+                return (toks[i].value in ('int', 'char', 'float', 'double')
+                        or toks[i].value in TYPE_QUALIFIERS)
+        return False
+
     def parse_declaration(self) -> Stmt:
-        type_tok = self.lexer.consume()  # KEYWORD
+        is_const = False
+        while self._is_kw('const'):
+            self.lexer.consume()
+            is_const = True
+        type_, type_tok = self._parse_type_spec(
+            'E_PARSE_DECL_TYPE', 'Ожидался тип переменной')
         decls: List[VarDecl] = []
         while True:
             name_tok = self._expect('IDENTIFIER')
+            dims = self._parse_array_dims()
             init: Optional[Expr] = None
+            array_init: Optional[ArrayInit] = None
             if self._is_op('='):
                 self.lexer.consume()
-                init = self.parse_expr()
-            decls.append(VarDecl(type_tok.value, name_tok.value, init))
+                if self._is_delim('{'):
+                    array_init = self._parse_array_init()
+                else:
+                    init = self.parse_expr()
+            decls.append(VarDecl(type_, name_tok.value, init,
+                                 is_const=is_const,
+                                 line=type_tok.line, col=type_tok.col,
+                                 dims=dims, array_init=array_init))
             if self._is_delim(','):
                 self.lexer.consume()
                 continue
@@ -239,16 +353,57 @@ class Parser:
         self._expect('DELIMITER', ';')
         return decls[0] if len(decls) == 1 else MultiVarDecl(decls)
 
+    def parse_ifdef(self) -> IfdefStmt:
+        d = self.lexer.consume()
+        negated = _norm_pp(d.value) == '#ifndef'
+        name_tok = self._peek()
+        if name_tok.category not in ('IDENTIFIER', 'MACRO') \
+                or name_tok.line != d.line:
+            raise TranslationException(TranslationError(
+                stage='parser', code='E_PARSE_IFDEF',
+                message=f"Ожидалось имя макроса после {d.value!r}, "
+                        f"получено {name_tok.value!r}",
+                line=name_tok.line, col=name_tok.col,
+            ))
+        self.lexer.consume()
+
+        body: List[Stmt] = []
+        else_body: List[Stmt] = []
+        cur = body
+        while True:
+            t = self._peek()
+            if t.code == 'EOF':
+                raise TranslationException(TranslationError(
+                    stage='parser', code='E_PARSE_IFDEF',
+                    message=f"Для {d.value!r} не найдено #endif",
+                    line=d.line, col=d.col,
+                ))
+            if t.category == 'PREPROCESSOR':
+                pp = _norm_pp(t.value)
+                if pp == '#endif':
+                    self.lexer.consume()
+                    break
+                if pp == '#else':
+                    self.lexer.consume()
+                    cur = else_body
+                    continue
+                if pp in ('#ifdef', '#ifndef'):
+                    cur.append(self.parse_ifdef())
+                    continue
+            cur.append(self.parse_stmt())
+        return IfdefStmt(name_tok.value, body, else_body,
+                         negated=negated, line=d.line, col=d.col)
+
     def parse_return(self) -> ReturnStmt:
-        self.lexer.consume()  # return
+        tok = self.lexer.consume()
         val: Optional[Expr] = None
         if not self._is_delim(';'):
             val = self.parse_expr()
         self._expect('DELIMITER', ';')
-        return ReturnStmt(val)
+        return ReturnStmt(val, line=tok.line, col=tok.col)
 
     def parse_if(self) -> IfStmt:
-        self.lexer.consume()  # if
+        self.lexer.consume() 
         self._expect('DELIMITER', '(')
         cond = self.parse_expr()
         self._expect('DELIMITER', ')')
@@ -261,7 +416,7 @@ class Parser:
         return IfStmt(cond, then_body, else_body)
 
     def parse_while(self) -> WhileStmt:
-        self.lexer.consume()  # while
+        self.lexer.consume()
         self._expect('DELIMITER', '(')
         cond = self.parse_expr()
         self._expect('DELIMITER', ')')
@@ -269,7 +424,7 @@ class Parser:
         return WhileStmt(cond, body)
 
     def parse_do_while(self) -> DoWhileStmt:
-        self.lexer.consume()  # do
+        self.lexer.consume()
         body = self._parse_statement_or_block()
         if not self._is_kw('while'):
             raise TranslationException(TranslationError(
@@ -285,12 +440,10 @@ class Parser:
         return DoWhileStmt(body, cond)
 
     def parse_for(self) -> ForStmt:
-        self.lexer.consume()  # for
+        self.lexer.consume()
         self._expect('DELIMITER', '(')
-
-        # init: либо объявление, либо выражение, либо пусто
         init: Optional[Stmt] = None
-        if self._is_kw('int') or self._is_kw('char') or self._is_kw('float') or self._is_kw('double'):
+        if self._at_type_decl():
             init = self.parse_declaration()
         elif not self._is_delim(';'):
             e = self.parse_expr()
@@ -313,7 +466,7 @@ class Parser:
         return ForStmt(init, cond, update, body)
 
     def parse_switch(self) -> SwitchStmt:
-        self.lexer.consume()  # switch
+        self.lexer.consume()
         self._expect('DELIMITER', '(')
         expr = self.parse_expr()
         self._expect('DELIMITER', ')')
@@ -352,7 +505,6 @@ class Parser:
             body.append(self.parse_stmt())
         return body
 
-    # ---- expressions ----
     def parse_expr(self) -> Expr:
         return self.parse_assignment()
 
@@ -455,19 +607,16 @@ class Parser:
         return left
 
     def parse_unary(self) -> Expr:
-        # префиксные
         if self._peek().category == 'OPERATOR' and self._peek().value in ('+', '-', '!', '~', '++', '--', '&', '*'):
             op = self.lexer.consume().value
             operand = self.parse_unary()
             return UnaryOp(op, operand)
 
-        # операнд
         expr = self.parse_primary()
 
-        # постфиксные ++/--
         while self._peek().category == 'OPERATOR' and self._peek().value in ('++', '--'):
             op = self.lexer.consume().value
-            expr = UnaryOp(op, expr)  # помечаем как постфикс (op тот же, но порядок — в узле)
+            expr = UnaryOp(op, expr)
         return expr
 
     def parse_primary(self) -> Expr:
@@ -490,11 +639,23 @@ class Parser:
             self.lexer.consume()
             return Char(t.value[1:-1])
 
+        if t.category == 'KEYWORD' and t.value in ('true', 'false'):
+            self.lexer.consume()
+            return Bool(t.value == 'true', line=t.line, col=t.col)
+
         if t.category in ('IDENTIFIER', 'MACRO'):
             self.lexer.consume()
             if self._is_delim('('):
-                return self.parse_call(t.value)
-            return Ident(t.value)
+                return self.parse_call(t)
+            indices: List[Expr] = []
+            while self._is_delim('['):
+                self.lexer.consume()
+                indices.append(self.parse_expr())
+                self._expect('DELIMITER', ']')
+            if indices:
+                return ArrayAccess(t.value, indices,
+                                   line=t.line, col=t.col)
+            return Ident(t.value, line=t.line, col=t.col)
 
         if self._is_delim('('):
             self.lexer.consume()
@@ -508,7 +669,7 @@ class Parser:
             line=t.line, col=t.col,
         ))
 
-    def parse_call(self, func_name: str) -> CallExpr:
+    def parse_call(self, name_tok: Token) -> CallExpr:
         self._expect('DELIMITER', '(')
         args: List[Expr] = []
         if not self._is_delim(')'):
@@ -517,7 +678,8 @@ class Parser:
                 self.lexer.consume()
                 args.append(self.parse_expr())
         self._expect('DELIMITER', ')')
-        return CallExpr(func_name, args)
+        return CallExpr(name_tok.value, args,
+                        line=name_tok.line, col=name_tok.col)
 
 
 def parse(source: str) -> Program:

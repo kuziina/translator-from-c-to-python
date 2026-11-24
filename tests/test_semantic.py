@@ -307,16 +307,30 @@ def test_continue_outside_loop():
     assert _err_code(exc) == 'E_SEM_LOOP_CTRL'
 
 
-def test_break_inside_switch_only():
-    """break в switch без цикла — по нашему правилу это ошибка
-    (loop_depth == 0). Если хотите разрешить break только в switch —
-    нужно отдельно отслеживать switch_depth. Сейчас — ошибка."""
-    exc = analyze_err("""
+def test_break_inside_switch_only_ok():
+    """break в switch без цикла — корректный C (switch_depth отслеживается)."""
+    analyze_ok("""
     int main() {
         int x = 1;
         switch (x) {
             case 1:
                 break;
+            default:
+                return 0;
+        }
+        return 1;
+    }
+    """)
+
+
+def test_continue_inside_switch_without_loop():
+    """continue в switch вне цикла — по-прежнему ошибка."""
+    exc = analyze_err("""
+    int main() {
+        int x = 1;
+        switch (x) {
+            case 1:
+                continue;
             default:
                 return 0;
         }
@@ -348,3 +362,67 @@ def test_function_scopes_independent():
     int g() { int t = 2; return t; }
     int main() { return f() + g(); }
     """)
+
+
+# ---------- массивы ----------
+
+def test_2d_array_usage_ok():
+    analyze_ok("""
+    int main() {
+        int a[2][3] = {{1, 2, 3}, {4, 5, 6}};
+        int b[2][2];
+        a[0][1] = b[1][0] + a[1][2];
+        return a[0][1];
+    }
+    """)
+
+
+def test_array_element_incr_ok():
+    analyze_ok("""
+    int main() {
+        int a[2][2];
+        a[0][1]++;
+        return a[0][1];
+    }
+    """)
+
+
+def test_index_non_array():
+    exc = analyze_err("""
+    int main() {
+        int x = 1;
+        return x[0];
+    }
+    """)
+    assert _err_stage(exc) == 'semantic'
+    assert _err_code(exc) == 'E_SEM_ARRAY_INDEX'
+
+
+def test_too_many_indices():
+    exc = analyze_err("""
+    int main() {
+        int a[2][2];
+        return a[0][1][2];
+    }
+    """)
+    assert _err_code(exc) == 'E_SEM_ARRAY_INDEX'
+
+
+def test_assign_to_const_array_element():
+    exc = analyze_err("""
+    int main() {
+        const int a[2] = {1, 2};
+        a[0] = 3;
+        return a[0];
+    }
+    """)
+    assert _err_code(exc) == 'E_SEM_CONST_MODIFY'
+
+
+def test_undeclared_array_access():
+    exc = analyze_err("""
+    int main() {
+        return a[0][1];
+    }
+    """)
+    assert _err_code(exc) == 'E_SEM_UNDECLARED'

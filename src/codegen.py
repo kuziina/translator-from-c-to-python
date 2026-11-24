@@ -4,8 +4,8 @@ from typing import List
 from .ast_nodes import (
     Program, FuncDef, VarDecl, MultiVarDecl, ExprStmt, IfStmt, WhileStmt,
     DoWhileStmt, ForStmt, ReturnStmt, BreakStmt, ContinueStmt, SwitchStmt,
-    CommentStmt, Assignment, BinOp, UnaryOp, TernaryOp, CallExpr,
-    Ident, Num, Str, Char, Expr,
+    IfdefStmt, CommentStmt, Assignment, BinOp, UnaryOp, TernaryOp, CallExpr,
+    Ident, ArrayAccess, ArrayInit, Num, Str, Char, Bool, Expr,
 )
 from .errors import TranslationError, TranslationException
 
@@ -31,121 +31,38 @@ UNARY_MAP = {
 }
 
 
-def _fmt_printf(args: List[Expr]) -> str:
-    """printf(fmt, a, b) -> print(f"...") с преобразованием спецификаторов."""
-    if not args:
-        return "print()"
-    fmt_expr = args[0]
-    if not isinstance(fmt_expr, Str):
-        # Не строковый формат — просто выведем всё как print(args)
-        inner = ", ".join(_expr_to_py(a) for a in args)
-        return f"print({inner})"
-
-    fmt = fmt_expr.val
-    rest = args[1:]
-
-    # Парсим спецификаторы %[флаги][ширина][.точность][длина]спец
-    out_parts: List[str] = []
-    arg_idx = 0
-    i = 0
-    while i < len(fmt):
-        ch = fmt[i]
-        if ch != '%':
-            out_parts.append(ch)
-            i += 1
-            continue
-        # %%
-        if i + 1 < len(fmt) and fmt[i + 1] == '%':
-            out_parts.append('%')
-            i += 2
-            continue
-        # Спецификатор
-        j = i + 1
-        while j < len(fmt) and fmt[j] in '-+ 0#0123456789.':
-            j += 1
-        if j >= len(fmt):
-            out_parts.append(fmt[i:])
-            break
-        spec_len = fmt[j]
-        # Пропускаем длину (l, h)
-        k = j
-        while k < len(fmt) and fmt[k] in 'lh':
-            k += 1
-        if k < len(fmt):
-            spec = fmt[k]
-            j = k
-        else:
-            spec = spec_len
-
-        if arg_idx >= len(rest):
-            # Не хватает аргументов — оставим как есть
-            out_parts.append(fmt[i:j + 1])
-            i = j + 1
-            continue
-
-        arg = rest[arg_idx]
-        arg_idx += 1
-        expr = _expr_to_py(arg)
-        if spec in 'di':
-            out_parts.append('{')
-            out_parts.append(expr)
-            out_parts.append('}')
-        elif spec in 'fFeEgG':
-            out_parts.append('{')
-            out_parts.append(expr)
-            out_parts.append('}')
-        elif spec == 'c':
-            out_parts.append('{')
-            out_parts.append(expr)
-            out_parts.append('}')
-        elif spec == 's':
-            out_parts.append('{')
-            out_parts.append(expr)
-            out_parts.append('}')
-        else:
-            out_parts.append('{')
-            out_parts.append(expr)
-            out_parts.append('}')
-        i = j + 1
-
-    # Экранируем фигурные скобки в текстовой части (для f-строки)
-    # Проще: собрать как f-строку через .format
-    # Но у нас уже вставлены {expr}. Значит, экранируем только текст.
-    # Пересоберём: пройдёмся и заэкранируем все `{`/`}`, которых мы не вставили.
-    # Проще: собрать без f-строки, через .format(...)
-    # Сделаем иначе: соберём строку с {} и отдельно список аргументов.
-    # Тут мы уже потеряли структуру. Поэтому перепишем _fmt_printf ниже — см. v2.
-    # Заглушка (не используется — вызов идёт в _fmt_printf_v2)
-    raise RuntimeError("unreachable")
-
-
-def _expr_to_py(e: Expr) -> str:
-    return CodeGenerator().expr(e)
-
-
 class CodeGenerator:
     def __init__(self):
         self.lines: List[str] = []
         self.indent = 0
+        self.defines_names: set = set()
 
-    # ---- public ----
     def generate(self, program: Program) -> str:
         self.lines = []
         self.indent = 0
+        self.defines_names = {d.name for d in program.defines}
 
-        # Импорты
+        for comment in program.header_comments:
+            self._emit_comment(comment)
+        if program.header_comments:
+            self._emit("")
+
         imports = self._gen_imports(program)
         for imp in imports:
             self._emit(imp)
         if imports:
             self._emit("")
 
-        # Функции
+        defines = self._gen_defines(program)
+        for line in defines:
+            self._emit(line)
+        if defines:
+            self._emit("")
+
         for fn in program.funcs:
             self._gen_func(fn)
             self._emit("")
 
-        # Точка входа
         main = next((f for f in program.funcs if f.name == 'main'), None)
         if main is not None:
             self._emit('if __name__ == "__main__":')
@@ -153,12 +70,10 @@ class CodeGenerator:
             self._emit('main()')
             self.indent -= 1
 
-        # Убираем trailing пустые строки
         while self.lines and self.lines[-1] == "":
             self.lines.pop()
         return "\n".join(self.lines) + "\n"
 
-    # ---- helpers ----
     def _emit(self, line: str) -> None:
         if line == "":
             self.lines.append("")
@@ -177,12 +92,12 @@ class CodeGenerator:
                     result.append('import math')
                     seen.add('import math')
             else:
-                # Неизвестный заголовок — комментарий
                 result.append(f'# TODO: import for <{h}> не поддерживается')
         return result
 
-    # ---- functions ----
     def _gen_func(self, fn: FuncDef) -> None:
+        for comment in fn.leading_comments:
+            self._emit_comment(comment)
         params = ", ".join(p.name for p in fn.params)
         self._emit(f"def {fn.name}({params}):")
         self.indent += 1
@@ -193,26 +108,34 @@ class CodeGenerator:
                 self._gen_stmt(s)
         self.indent -= 1
 
-    # ---- statements ----
+    def _emit_comment(self, comment: CommentStmt) -> None:
+        for line in self._comment_lines(comment.text):
+            self._emit(line)
+
+    @staticmethod
+    def _comment_lines(text: str) -> List[str]:
+        if text.startswith('//'):
+            return ["# " + text[2:].strip()]
+        if text.startswith('/*'):
+            if text.endswith('*/'):
+                inner = text[2:-2].strip()
+            else:
+                inner = text[2:].strip()
+            lines = ["# " + line.strip() for line in inner.splitlines()]
+            return lines or ["#"]
+        return ["# " + text]
+
     def _gen_stmt(self, s) -> None:
         if isinstance(s, CommentStmt):
-            text = s.text
-            if text.startswith('//'):
-                self._emit("# " + text[2:].strip())
-            elif text.startswith('/*'):
-                inner = text[2:-2].strip() if text.endswith('*/') else text[2:].strip()
-                for line in inner.splitlines():
-                    self._emit("# " + line.strip())
-            else:
-                self._emit("# " + text)
+            self._emit_comment(s)
             return
 
         if isinstance(s, VarDecl):
-            if s.init is not None:
+            if s.dims:
+                self._emit(f"{s.name} = {self._gen_array_value(s)}")
+            elif s.init is not None:
                 self._emit(f"{s.name} = {self.expr(s.init)}")
             else:
-                # Без инициализации — не эмитим (Python без объявлений)
-                # но оставим комментарий для читаемости
                 self._emit(f"# {s.type_} {s.name}")
             return
 
@@ -223,6 +146,11 @@ class CodeGenerator:
 
         if isinstance(s, ExprStmt):
             self._gen_expr_stmt(s.expr)
+            return
+
+        if isinstance(s, IfdefStmt):
+            defined = s.macro in self.defines_names
+            self._gen_body(s.body if (defined != s.negated) else s.else_body)
             return
 
         if isinstance(s, IfStmt):
@@ -289,8 +217,105 @@ class CodeGenerator:
         for s in body:
             self._gen_stmt(s)
 
+    def _gen_array_value(self, d: VarDecl) -> str:
+        dims = self._effective_dims(d.dims, d.array_init)
+        if d.array_init is not None:
+            return self._gen_array_init(d.array_init, dims, 0)
+        if d.init is not None:
+            return self.expr(d.init)
+        return self._gen_array_zeros(dims, 0)
+
+    @staticmethod
+    def _effective_dims(dims: List,
+                        init: "ArrayInit | None") -> List:
+        result = list(dims)
+        node = init
+        for i, dim in enumerate(result):
+            if isinstance(dim, Num) and dim.val == 0:
+                if isinstance(node, ArrayInit):
+                    result[i] = Num(
+                        CodeGenerator._infer_dimension(node, result, i))
+                else:
+                    result[i] = Num(1)
+            if isinstance(node, ArrayInit):
+                first = node.values[0] if node.values else None
+                node = first if isinstance(first, ArrayInit) else None
+            else:
+                node = None
+        return result
+
+    @staticmethod
+    def _infer_dimension(init: ArrayInit, dims: List, level: int) -> int:
+        nested = any(isinstance(v, ArrayInit) for v in init.values)
+        if not nested and level + 1 < len(dims):
+            chunk = 1
+            for d in dims[level + 1:]:
+                if not isinstance(d, Num):
+                    return len(init.values)
+                chunk *= int(d.val)
+            if chunk > 0:
+                return (len(init.values) + chunk - 1) // chunk
+        return len(init.values)
+
+    def _gen_array_zeros(self, dims: List, level: int = 0) -> str:
+        dim = self.expr(dims[level])
+        if level == len(dims) - 1:
+            return f"[0] * ({dim})"
+        inner = self._gen_array_zeros(dims, level + 1)
+        return f"[{inner} for _ in range({dim})]"
+
+    def _gen_array_init(self, init: ArrayInit, dims: List,
+                        level: int) -> str:
+        # Плоский инициализатор для многомерного массива:
+        # int a[2][3] = {1, 2, 3, 4, 5, 6};
+        if level == 0 and len(dims) > 1 and self._is_flat_init(init):
+            return self._gen_flat_init(init.values, dims, 0)
+
+        parts: List[str] = []
+        for value in init.values:
+            if isinstance(value, ArrayInit):
+                parts.append(self._gen_array_init(value, dims, level + 1))
+            else:
+                parts.append(self.expr(value))
+
+        dim = dims[level] if level < len(dims) else None
+        if isinstance(dim, Num):
+            target = int(dim.val)
+            while len(parts) < target:
+                if level + 1 < len(dims):
+                    parts.append(self._gen_array_zeros(dims, level + 1))
+                else:
+                    parts.append("0")
+            parts = parts[:target]
+        return "[" + ", ".join(parts) + "]"
+
+    @staticmethod
+    def _is_flat_init(init: ArrayInit) -> bool:
+        return all(not isinstance(v, ArrayInit) for v in init.values)
+
+    def _gen_flat_init(self, values: List, dims: List,
+                       level: int) -> str:
+        for d in dims[level:]:
+            if not isinstance(d, Num):
+                inner = ", ".join(self.expr(v) for v in values)
+                return f"[{inner}]"
+        if level == len(dims) - 1:
+            target = int(dims[level].val)
+            items = [self.expr(v) for v in values[:target]]
+            items.extend(["0"] * (target - len(items)))
+            return "[" + ", ".join(items) + "]"
+
+        chunk = 1
+        for d in dims[level + 1:]:
+            if isinstance(d, Num):
+                chunk *= int(d.val)
+        target = int(dims[level].val)
+        rows = [self._gen_flat_init(values[i * chunk:(i + 1) * chunk],
+                                    dims, level + 1)
+                for i in range(target)]
+        return "[" + ", ".join(rows) + "]"
+
     def _gen_for(self, s: ForStmt) -> None:
-        # Если init — VarDecl и update — UnaryOp/Assignment, можно range
         if (isinstance(s.init, VarDecl)
                 and s.init.init is not None
                 and s.cond is not None
@@ -301,7 +326,6 @@ class CodeGenerator:
                 and s.init.name == s.update.operand.name):
             var = s.init.name
             start = self.expr(s.init.init)
-            # cond: var < N  /  var <= N  /  var > N / var >= N
             if isinstance(s.cond, BinOp) and isinstance(s.cond.left, Ident) and s.cond.left.name == var:
                 op = s.cond.op
                 limit = self.expr(s.cond.right)
@@ -325,7 +349,6 @@ class CodeGenerator:
                     self.indent -= 1
                     return
 
-        # Общий случай — while
         if s.init is not None:
             self._gen_stmt(s.init)
         cond = self.expr(s.cond) if s.cond is not None else "True"
@@ -338,7 +361,6 @@ class CodeGenerator:
 
     def _gen_switch(self, s: SwitchStmt) -> None:
         expr = self.expr(s.expr)
-        # Используем if/elif
         first = True
         default_case = None
         for c in s.cases:
@@ -359,23 +381,21 @@ class CodeGenerator:
 
     @staticmethod
     def _strip_break(body: List) -> List:
-        # В switch break на конце ветки не нужен
         if body and isinstance(body[-1], BreakStmt):
             return body[:-1]
         return body
 
     def _gen_expr_stmt(self, e: Expr) -> None:
-        # ++/-- как statement -> += 1 / -= 1
-        if isinstance(e, UnaryOp) and e.op in ('++', '--') and isinstance(e.operand, Ident):
+        if (isinstance(e, UnaryOp) and e.op in ('++', '--')
+                and isinstance(e.operand, (Ident, ArrayAccess))):
             op = '+=' if e.op == '++' else '-='
-            self._emit(f"{e.operand.name} {op} 1")
+            self._emit(f"{self.expr(e.operand)} {op} 1")
             return
         if isinstance(e, CallExpr) and e.func == 'printf':
             self._emit(self._fmt_printf(e.args))
             return
         if isinstance(e, CallExpr) and e.func == 'scanf':
-            # Осознанно не поддерживаем — генерируем заглушку
-            self._emit("# TODO: scanf не поддерживается транспилятором")
+            self._emit("# TODO: scanf не поддерживается транслятором")
             return
         if isinstance(e, Assignment):
             self._emit(f"{self.expr(e.left)} {e.op} {self.expr(e.right)}")
@@ -383,10 +403,32 @@ class CodeGenerator:
         if isinstance(e, CallExpr):
             self._emit(self.expr(e))
             return
-        # Просто выражение
         self._emit(self.expr(e))
 
-    # ---- expressions ----
+    def _gen_defines(self, program: Program) -> List[str]:
+        result: List[str] = []
+        for d in program.defines:
+            if d.value is None:
+                result.append(f"{d.name} = True")
+                continue
+            v = d.value.strip()
+            num = None
+            try:
+                num = int(v, 0)
+            except ValueError:
+                try:
+                    num = float(v)
+                except ValueError:
+                    num = None
+            if num is not None:
+                result.append(f"{d.name} = {num!r}")
+                continue
+            if len(v) >= 2 and v[0] == '"' and v[-1] == '"':
+                result.append(f"{d.name} = {v}")
+                continue
+            result.append(f"# #define {d.name} {v} (не подставлено)")
+        return result
+
     def expr(self, e: Expr) -> str:
         if isinstance(e, Num):
             return repr(e.val)
@@ -394,8 +436,13 @@ class CodeGenerator:
             return repr(e.val)
         if isinstance(e, Char):
             return repr(e.val)
+        if isinstance(e, Bool):
+            return 'True' if e.val else 'False'
         if isinstance(e, Ident):
             return e.name
+        if isinstance(e, ArrayAccess):
+            indices = "".join(f"[{self.expr(i)}]" for i in e.indices)
+            return f"{e.name}{indices}"
         if isinstance(e, BinOp):
             op = BINOP_MAP.get(e.op, e.op)
             left = self._paren(e.left)
@@ -403,8 +450,6 @@ class CodeGenerator:
             return f"{left} {op} {right}"
         if isinstance(e, UnaryOp):
             if e.op in ('++', '--'):
-                # В выражении не поддерживаем — но попробуем как +1/-1
-                # Лучше явно: (x + 1) или (x - 1)
                 inner = self._paren(e.operand)
                 return f"({inner} + 1)" if e.op == '++' else f"({inner} - 1)"
             op = UNARY_MAP.get(e.op, e.op)
@@ -441,10 +486,8 @@ class CodeGenerator:
 
         fmt = fmt_expr.val
         rest = args[1:]
-
-        # Собираем f-строку, экранируя литеральные { }
         parts: List[str] = []
-        expr_list: List[str] = []  # не нужен при f-строке
+        expr_list: List[str] = []
         i = 0
         arg_idx = 0
         while i < len(fmt):
@@ -472,7 +515,6 @@ class CodeGenerator:
             if j >= len(fmt):
                 parts.append(fmt[i:])
                 break
-            # length modifiers
             k = j
             while k < len(fmt) and fmt[k] in 'lh':
                 k += 1
@@ -488,7 +530,6 @@ class CodeGenerator:
             arg_idx += 1
             expr_py = self.expr(arg)
             if spec == 'c':
-                # %c: в C — код символа или сам символ
                 parts.append("{")
                 parts.append(expr_py)
                 parts.append("}")
@@ -497,7 +538,6 @@ class CodeGenerator:
                 parts.append(expr_py)
                 parts.append("}")
             elif spec in 'fFeEgG':
-                # Оставим без форматирования точности (упрощённо)
                 parts.append("{")
                 parts.append(expr_py)
                 parts.append("}")
@@ -512,8 +552,6 @@ class CodeGenerator:
             i = j + 1
 
         body = "".join(parts)
-        # Разбираем body на литералы и {expr}
-        # Для f-строки нужно экранировать только что уже заэкранировано.
         return f'print(f"{body}")'
 
 

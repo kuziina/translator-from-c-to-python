@@ -1,5 +1,5 @@
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional, Union
 
 
@@ -19,8 +19,25 @@ class Char:
 
 
 @dataclass
+class Bool:
+    val: bool
+    line: int = 0
+    col: int = 0
+
+
+@dataclass
 class Ident:
     name: str
+    line: int = 0
+    col: int = 0
+
+
+@dataclass
+class ArrayAccess:
+    name: str
+    indices: List['Expr']
+    line: int = 0
+    col: int = 0
 
 
 @dataclass
@@ -47,6 +64,8 @@ class TernaryOp:
 class CallExpr:
     func: str
     args: List['Expr']
+    line: int = 0
+    col: int = 0
 
 
 @dataclass
@@ -57,10 +76,20 @@ class Assignment:
 
 
 @dataclass
+class ArrayInit:
+    values: List[Union['Expr', 'ArrayInit']]
+
+
+@dataclass
 class VarDecl:
     type_: str
     name: str
     init: Optional['Expr'] = None
+    is_const: bool = False
+    line: int = 0
+    col: int = 0
+    dims: List['Expr'] = field(default_factory=list)
+    array_init: Optional['ArrayInit'] = None
 
 
 @dataclass
@@ -103,16 +132,20 @@ class ForStmt:
 @dataclass
 class ReturnStmt:
     value: Optional['Expr']
+    line: int = 0
+    col: int = 0
 
 
 @dataclass
 class BreakStmt:
-    pass
+    line: int = 0
+    col: int = 0
 
 
 @dataclass
 class ContinueStmt:
-    pass
+    line: int = 0
+    col: int = 0
 
 
 @dataclass
@@ -137,6 +170,8 @@ class IncludeStmt:
 class DefineStmt:
     name: str
     value: Optional[str]
+    line: int = 0
+    col: int = 0
 
 
 @dataclass
@@ -144,6 +179,9 @@ class IfdefStmt:
     macro: str
     body: List['Stmt']
     else_body: List['Stmt']
+    negated: bool = False   # True для #ifndef
+    line: int = 0
+    col: int = 0
 
 
 @dataclass
@@ -157,6 +195,9 @@ class FuncDef:
     name: str
     params: List[VarDecl]
     body: List['Stmt']
+    line: int = 0
+    col: int = 0
+    leading_comments: List[CommentStmt] = field(default_factory=list)
 
 
 @dataclass
@@ -164,9 +205,11 @@ class Program:
     includes: List[IncludeStmt]
     defines: List[DefineStmt]
     funcs: List[FuncDef]
+    header_comments: List[CommentStmt] = field(default_factory=list)
 
 
-Expr = Union[Num, Str, Char, Ident, BinOp, UnaryOp, TernaryOp, CallExpr, Assignment]
-Stmt = Union[ExprStmt, VarDecl, MultiVarDecl, IfStmt, WhileStmt, DoWhileStmt, ForStmt,
-             ReturnStmt, BreakStmt, ContinueStmt, SwitchStmt, IncludeStmt,
-             DefineStmt, IfdefStmt, CommentStmt]
+Expr = Union[Num, Str, Char, Bool, Ident, ArrayAccess, BinOp, UnaryOp,
+             TernaryOp, CallExpr, Assignment]
+Stmt = Union[ExprStmt, VarDecl, MultiVarDecl, IfStmt, WhileStmt, DoWhileStmt,
+             ForStmt, ReturnStmt, BreakStmt, ContinueStmt, SwitchStmt,
+             IncludeStmt, DefineStmt, IfdefStmt, CommentStmt]

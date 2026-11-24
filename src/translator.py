@@ -40,7 +40,7 @@ def translate(source: str, debug: bool = False) -> TranslationResult:
             tokens=tokens if debug else None,
             ast=ast if debug else None,
         )
-    except Exception as ex:  # непредвиденное
+    except Exception as ex:
         return TranslationResult(
             success=False, python_code=None,
             errors=[TranslationError(
