@@ -15,11 +15,7 @@ class Token:
     category: str
 
 
-# Порядок важен: длинные/специфичные — раньше.
-# Ключевые слова — через (?<!\w) ... (?!\w), т.к. \b в комбинированном regex
-# ведёт себя не всегда предсказуемо.
 _TOKEN_SPEC: List[Tuple[str, str, str]] = [
-    # --- препроцессор ---
     ('PP1', r'#\s*include', 'PREPROCESSOR'),
     ('PP2', r'#\s*define', 'PREPROCESSOR'),
     ('PP3', r'#\s*ifdef', 'PREPROCESSOR'),
@@ -28,11 +24,8 @@ _TOKEN_SPEC: List[Tuple[str, str, str]] = [
     ('PP5', r'#\s*else', 'PREPROCESSOR'),
     ('PP6', r'#\s*endif', 'PREPROCESSOR'),
 
-    # --- заголовки ---
     ('H1', r'<[a-zA-Z0-9_/\.]+>', 'HEADER'),
-    ('H2', r'"[a-zA-Z0-9_/\.]+"', 'HEADER'),
 
-    # --- ключевые слова ---
     ('I3', r'(?<!\w)int(?!\w)', 'KEYWORD'),
     ('I3', r'(?<!\w)char(?!\w)', 'KEYWORD'),
     ('I3', r'(?<!\w)float(?!\w)', 'KEYWORD'),
@@ -50,24 +43,25 @@ _TOKEN_SPEC: List[Tuple[str, str, str]] = [
     ('I3', r'(?<!\w)case(?!\w)', 'KEYWORD'),
     ('I3', r'(?<!\w)default(?!\w)', 'KEYWORD'),
     ('I3', r'(?<!\w)const(?!\w)', 'KEYWORD'),
+    ('I3', r'(?<!\w)true(?!\w)', 'KEYWORD'),
+    ('I3', r'(?<!\w)false(?!\w)', 'KEYWORD'),
+    ('I3', r'(?<!\w)short(?!\w)', 'KEYWORD'),
+    ('I3', r'(?<!\w)long(?!\w)', 'KEYWORD'),
+    ('I3', r'(?<!\w)unsigned(?!\w)', 'KEYWORD'),
+    ('I3', r'(?<!\w)signed(?!\w)', 'KEYWORD'),
 
-        # --- идентификаторы и макросы ---
     ('I2', r'[A-Z_][A-Z0-9_]*', 'MACRO'),
     ('I1', r'[a-zA-Z_][a-zA-Z0-9_]*', 'IDENTIFIER'),
 
-    # --- комментарии ---
     ('COMMENT', r'//[^\n]*|/\*[\s\S]*?\*/', 'COMMENT'),
 
-    # --- строки/символы ---
     ('S2', r'"[^"\\]*(?:\\.[^"\\]*)*"', 'STRING'),
     ('S1', r"'[^'\\]*(?:\\.[^'\\]*)*'", 'CHAR'),
 
-    # --- числа: сначала float/hex, потом int ---
     ('N2', r'\d+\.\d+', 'NUMBER'),
     ('N3', r'0[xX][0-9a-fA-F]+', 'NUMBER'),
     ('N1', r'\d+', 'NUMBER'),
 
-    # --- операторы: длинные раньше коротких ---
     ('O1',  r'<=',  'OPERATOR'),
     ('O2',  r'>=',  'OPERATOR'),
     ('O3',  r'==',  'OPERATOR'),
@@ -100,7 +94,6 @@ _TOKEN_SPEC: List[Tuple[str, str, str]] = [
     ('O29', r'\?', 'OPERATOR'),
     ('O30', r':', 'OPERATOR'),
 
-    # --- разделители ---
     ('D1', r'\(', 'DELIMITER'),
     ('D2', r'\)', 'DELIMITER'),
     ('D3', r'\{', 'DELIMITER'),
@@ -111,12 +104,10 @@ _TOKEN_SPEC: List[Tuple[str, str, str]] = [
     ('D8', r',', 'DELIMITER'),
     ('D9', r'\.', 'DELIMITER'),
 
-    # --- пробелы/переносы — в самом конце ---
     ('SKIP', r'[ \t\r\n]+', 'SKIP'),
 ]
 
 
-# Собираем master-regex один раз на уровне модуля.
 _parts = []
 _group_to_spec = {}
 for _i, (_code, _pat, _cat) in enumerate(_TOKEN_SPEC):
@@ -171,7 +162,6 @@ class Lexer:
 
         self.tokens.append(Token('EOF', '', self._line, self._col, 'EOF'))
 
-    # --- API ---
     def peek(self) -> Token:
         return self.tokens[self.pos]
 
